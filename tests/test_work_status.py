@@ -23,7 +23,7 @@ def projection(*, state="claimed", assignment="you", project="current", dependen
             "authority_scope": "MARKETPLACE_CLAIM_ONLY"}
 
 
-def call_tool(tool, value, *, state="claimed", token="authored_supplier_fixture"):
+def call_tool(tool, value, *, state="claimed", token="authored_supplier_fixture", job_extra=None):
     calls = []
 
     def backend(method, path, **kwargs):
@@ -32,7 +32,7 @@ def call_tool(tool, value, *, state="claimed", token="authored_supplier_fixture"
             return deepcopy(value)
         if path.endswith("/execution-policy"):
             return deepcopy(POLICY)
-        return {**JOB, "state": state}
+        return {**JOB, "state": state, **(job_extra or {})}
 
     with patch.object(server, "TOKEN", token), patch.object(server, "_call", side_effect=backend):
         result = tool(JOB["id"])
@@ -53,8 +53,11 @@ class SupplierWorkPresentationTests(unittest.TestCase):
                 self.assertEqual(status_calls, [("GET", "/api/jobs/job_fixture/work-status", {
                     "headers": {"Authorization": "Bearer authored_supplier_fixture"}})])
                 self.assertTrue(all(method == "GET" for method, _, _ in calls))
-                self.assertTrue(all(not kwargs for _, path, kwargs in calls if path not in (
-                    "/api/jobs/job_fixture/work-status", "/api/local-supplier-execution/jobs/job_fixture/offers")))
+                # The holder's own reads (the review loop's /work too) carry its bearer and nothing else; every other read is anonymous.
+                holder_reads = ("/work-status", "/work", "/judging", "/context", "/claim-request")
+                self.assertTrue(all(kwargs == {"headers": {"Authorization": "Bearer authored_supplier_fixture"}}
+                                    for _, path, kwargs in calls if path.endswith(holder_reads)))
+                self.assertTrue(all(not kwargs for _, path, kwargs in calls if not path.endswith(holder_reads)))
 
     def test_preclaim_and_other_supplier_cannot_start(self):
         cases = [
@@ -157,13 +160,23 @@ class SupplierWorkPresentationTests(unittest.TestCase):
                 for tool in (server.review_job, server.job_status):
                     result = tool(value)
                     self.assertIn("error", result)
-                    self.assertEqual(result["next_action"], server.WORK_ACTIONS["authorization_unknown"])
+                    self.assertEqual(result["next_action"], "Check the job ID.")
                 call.assert_not_called()
 
-    def test_six_tools_preserve_arguments_except_explicit_submit_variant(self):
-        expected = {"find_work": {"max_total_tokens", "minimum_payout_usd"}, "review_job": {"job_id"},
-                    "claim_job": {"job_id"}, "submit_work": {"job_id", "pr_url", "execution_offer_id", "idempotency_key"},
-                    "job_status": {"job_id"}, "my_earnings": set()}
+    def test_eight_tools_and_their_arguments(self):
+        # The demo-only execution variant is gone from the published surface.
+        expected = {"find_work": {"max_total_tokens", "minimum_payout_usd", "languages"}, "review_job": {"job_id"},
+                    "claim_job": {"job_id"},
+                    # Acceptance pack v1 (proposed ADR A4): the check, the evidence and the honest
+                    # exit; the change-request thread's note (collaboration) rides along.
+                    # acceptance-pack-v2: evidence bound to see-it rows (DEF-11).
+                    "submit_work": {"job_id", "pr_url", "tokens_used", "message", "check_only", "evidence_urls",
+                                    "blocker_code", "blocker_note", "evidence", "patch", "deliverable_url", "note"},
+                    "job_status": {"job_id", "wait_seconds", "reply", "since"}, "my_earnings": set(),
+                    "read_messages": {"since"},
+                    "send_message": {"conversation_id", "text", "on_behalf_of_owner"}}
+        self.assertEqual(inspect.getsource(server).count("@mcp.tool("), 8)
+        self.assertNotIn("local-supplier-execution", inspect.getsource(server))
         for name, fields in expected.items():
             self.assertEqual(set(inspect.signature(getattr(server, name)).parameters), fields)
 
@@ -231,3 +244,115 @@ class FunctionalWorkV2Tests(unittest.TestCase):
         result, _ = call_tool(server.job_status, value)
         self.assertEqual(result['work_authorization'], 'unknown')
         self.assertIsNotNone(result['work_status'])
+
+
+class WorkStatusEnvelopeTests(unittest.TestCase):
+    def packet(self, *, v2=True, action="request_human_claim"):
+        value = projection(state="open", assignment="unassigned", project="standalone",
+                           dependencies="not_applicable", claim="none", can_start=False, action=action)
+        if v2:
+            value.update(schema="supplier-job-work-v2", authority_scope="MARKETPLACE_CLAIM_AND_SUBMISSION_ONLY",
+                         functional_completion={"status": "none", "authority": None},
+                         can_submit_pr=False, submission_authority="NONE")
+        return value
+
+    def test_metadata_stays_beside_the_exact_packet(self):
+        for mode in ("poster", "racer"):
+            for left in (0, 1, 2):
+                for tool in (server.review_job, server.job_status):
+                    with self.subTest(mode=mode, left=left, tool=tool.__name__):
+                        packet = self.packet()
+                        if mode == "racer":
+                            packet["next_action"] = server._RACER_TAKE_ACTION
+                        value = {"work_status": packet, "approval_mode": mode, "attempts_left": left}
+                        result, _ = call_tool(tool, value, state="open")
+                        self.assertEqual(set(result["work_status"]), set(packet))
+                        self.assertEqual(result["work_status"], packet)
+                        self.assertEqual(result["approval_mode"], mode)
+                        self.assertEqual(result["attempts_left"], left)
+                        self.assertFalse(result["work_status"]["can_start_bounty"])
+
+    def test_older_bare_or_wrapped_packets_have_unknown_metadata(self):
+        for v2 in (False, True):
+            packet = self.packet(v2=v2)
+            for value in (packet, {"work_status": packet}):
+                for tool in (server.review_job, server.job_status):
+                    with self.subTest(v2=v2, wrapped="work_status" in value, tool=tool.__name__):
+                        result, _ = call_tool(tool, value, state="open")
+                        self.assertEqual(result["work_status"], packet)
+                        self.assertIsNone(result.get("approval_mode"))
+                        self.assertIsNone(result.get("attempts_left"))
+
+    def test_active_sealed_and_cancelled_presentations_keep_metadata_outside(self):
+        for state, extra in (("claimed", {}), ("claimed", {"sealed": True}), ("cancelled", {})):
+            packet = projection(project="standalone", dependencies="not_applicable")
+            packet.update(schema="supplier-job-work-v2", authority_scope="MARKETPLACE_CLAIM_AND_SUBMISSION_ONLY",
+                          functional_completion={"status": "none", "authority": None},
+                          can_submit_pr=True, submission_authority="CURRENT_HUMAN_CLAIM")
+            if state == "cancelled":
+                packet.update(job_state=state, claim={"status": "closed"}, can_start_bounty=False,
+                              can_submit_pr=False, submission_authority="NONE", next_action_code="closed",
+                              next_action=server.WORK_ACTIONS["closed"])
+            for tool in (server.review_job, server.job_status):
+                result, _ = call_tool(tool, {"work_status": packet, "approval_mode": "poster", "attempts_left": 1},
+                                      state=state, job_extra=extra)
+                self.assertEqual(set(result["work_status"]), set(packet))
+                self.assertEqual(result["approval_mode"], "poster")
+                self.assertEqual(result["attempts_left"], 1)
+                self.assertEqual(result["work_status"]["can_start_bounty"], state == "claimed")
+                self.assertEqual(result["work_status"]["can_submit_pr"], state == "claimed")
+
+    def test_optional_metadata_is_validated_independently(self):
+        for fields in ({"approval_mode": "poster"}, {"attempts_left": 0}):
+            result, _ = call_tool(server.job_status, {"work_status": self.packet(), **fields}, state="open")
+            self.assertEqual(result["work_status"], self.packet())
+            for field in ("approval_mode", "attempts_left"):
+                self.assertEqual(result.get(field), fields.get(field))
+
+    def test_invalid_metadata_is_unknown_without_retry(self):
+        for field, values in (("approval_mode", (None, True, 1, "unknown", [], {})),
+                              ("attempts_left", (None, True, False, -1, 3, 1.0, "1", [], {}))):
+            for replacement in values:
+                for tool in (server.review_job, server.job_status):
+                    with self.subTest(field=field, value=replacement, tool=tool.__name__):
+                        value = {"work_status": self.packet(), field: replacement}
+                        result, calls = call_tool(tool, value, state="open")
+                        self.assertIsNone(result["work_status"])
+                        self.assertEqual(result["work_authorization"], "unknown")
+                        self.assertEqual(sum(path.endswith("/work-status") for _, path, _ in calls), 1)
+
+    def test_nested_metadata_and_private_extensions_are_rejected(self):
+        for field, addition in (("approval_mode", "racer"), ("attempts_left", 1),
+                                ("source", "private_projection_marker")):
+            packet = {**self.packet(), field: addition}
+            for value in (packet, {"work_status": packet, "approval_mode": "poster", "attempts_left": 2}):
+                result, _ = call_tool(server.job_status, value, state="open")
+                self.assertIsNone(result["work_status"])
+                self.assertNotIn("private_projection_marker", json.dumps(result))
+        result, _ = call_tool(server.job_status, {"work_status": self.packet(),
+                             "source": "private_projection_marker"}, state="open")
+        self.assertIsNone(result["work_status"])
+        self.assertNotIn("private_projection_marker", json.dumps(result))
+
+    def test_wrapping_does_not_weaken_packet_validation(self):
+        for field, replacement in (("job_id", "job_other"), ("can_start_bounty", True),
+                                   ("can_submit_pr", True), ("next_action", "private_projection_marker")):
+            packet = {**self.packet(), field: replacement}
+            result, _ = call_tool(server.job_status, {"work_status": packet,
+                                 "approval_mode": "poster", "attempts_left": 1}, state="open")
+            self.assertIsNone(result["work_status"])
+        for packet in (None, [], "invalid"):
+            result, _ = call_tool(server.job_status, {"work_status": packet}, state="open")
+            self.assertIsNone(result["work_status"])
+
+    def test_racer_pending_copy_reads_top_level_mode(self):
+        packet = self.packet(action="await_claim_decision")
+        packet["next_action"] = server._RACER_TAKE_ACTION
+        for tool in (server.review_job, server.job_status):
+            result, _ = call_tool(tool, {"work_status": packet, "approval_mode": "racer", "attempts_left": 1},
+                                  state="open")
+            self.assertEqual(result["next_action"], server._RACER_TAKE_ACTION)
+            self.assertEqual(result["work_status"], packet)
+            for fields in ({}, {"approval_mode": "poster"}):
+                result, _ = call_tool(tool, {"work_status": packet, **fields}, state="open")
+                self.assertIsNone(result["work_status"])

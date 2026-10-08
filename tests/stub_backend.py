@@ -15,9 +15,53 @@ TOKEN = "sup_test_token"
 POSTER_TOKEN = "mpp_stub_poster"
 PORT = 8400
 
-# claim_token -> {job_id, used}: the stub half of the two-step handshake
-CLAIM_TOKENS: dict[str, dict] = {}
+# request_id -> {job_id, status}: the stub half of the two-step handshake
+REQUESTS: dict[str, dict] = {}
 OPERATION_CREDENTIALS: dict[str, dict] = {}
+
+# Acceptance pack v1: job_1 carries a pack, as MergePaid's typed summary, its /judging
+# block and a recorded verdict. Authored stub state, not a provider observation.
+ACCEPTANCE_SUMMARY = {"checks": 2, "solid_capable": 1, "reproduces_problem": 1, "see_it": 1, "you_decide": 0, "held_out": 0,
+                      "cli_checks": 0, "tool_checks": 0, "budgets": 0,
+                      "house_rules": {"allow_new_packages": False, "max_changed_lines": 300,
+                                      "only_paths": ["app/webhooks/**"]},
+                      "base_proof": "reported_by_poster_ci", "decided_by": "checks_then_poster_merge"}
+ACCEPTANCE = {"schema": "acceptance-pack-v1", "content_trust": "UNTRUSTED_POSTER_CONTENT",
+              "rows": [{"id": "MP-1", "class": "check", "name": "A retry never fires twice",
+                        "role": "must_start_passing", "harness": "black_box", "generated": True, "expect": 3,
+                        "tests": ["mergepaid/job_1/mp_check_mp1.py::test_examples"],
+                        "examples": [{"id": "ex1", "expect": "pass", "given": "a 503", "when": "it retries",
+                                      "then": "one delivery", "input": {"status": 503}, "output": {"deliveries": 1}},
+                                     {"id": "ex2", "expect": "refuse", "given": "a 400", "when": "it retries",
+                                      "then": "no retry", "input": {"status": 400}, "output": {"deliveries": 0}}]},
+                       {"id": "MP-2", "class": "check", "name": "Your existing tests still pass",
+                        "role": "must_keep_passing", "harness": "in_process", "suite": "pytest_all", "generated": False},
+                       {"id": "MP-3", "class": "see_it", "name": "The retry log reads the same",
+                        "example": {"before": "one line per retry", "after": "one line per retry"}}],
+              "stack": {"runner": "pytest", "setup": {"template": "pip_requirements", "path": "requirements.txt"}},
+              "house_rules": ACCEPTANCE_SUMMARY["house_rules"], "interface": {"symbols": [], "notes": ""},
+              "protected": {"judge": [".github/**"], "amber": ["requirements*.txt"], "may_edit": []},
+              "decided_by": "checks_then_poster_merge", "pin": {"files": {}, "workflow_blob": "c" * 40},
+              "fund_base_commit": "b" * 40, "observable": True,
+              "done_means": ("Every check row green on your pull request's head from the job's own MergePaid "
+                             "workflow, nothing judge-tier changed, and the house rules held. Add see-it evidence. "
+                             "The poster merges, and the merge pays."),
+              "self_check": [f"stub step {n}" for n in range(1, 9)],
+              "reproduce": {"setup": {"template": "pip_requirements", "path": "requirements.txt"},
+                            "command": "MP_LOCAL=1 MP_SEED=$RANDOM bash mergepaid/job_1/mp_run.sh",
+                            # As the backend lists them (audit round 1 › P3): verify is the answer.
+                            "steps": ["prepare", "setup", "row", "verify"],
+                            "commands": [f"MP_LOCAL=1 MP_SEED=$RANDOM bash mergepaid/job_1/mp_run.sh {step}"
+                                         for step in ("prepare", "setup", "row", "verify")],
+                            "branch_prefix": "mp-job_1-"}}
+VERDICT = {"pull_request": 99, "head_commit": "a" * 40, "base_commit": "b" * 40, "judge_intact": True,
+           "judge_reasons": [], "caution": [], "commits_by_racer": True,
+           "rows": [{"id": "MP-1", "status": "passed", "solid": False, "limit": "not yet proven on GitHub"},
+                    {"id": "MP-2", "status": "passed", "solid": False,
+                     "limit": "the fix's own code ran inside this check"}],
+           "house_rules": [{"rule": "allow_new_packages", "held": True, "detail": "no package files changed"}],
+           "ready": True, "reason_codes": [], "retry_after": None, "next_action": "backend words"}
+RECORDED = []  # acceptance_status once a preflight "recorded" one
 
 JOBS = {
     "job_1": {
@@ -27,6 +71,9 @@ JOBS = {
         "repo_url": "https://github.com/acme/widgets",
         "issue_url": "https://github.com/acme/widgets/issues/42",
         "criteria": "Existing tests pass; new test covers the double-fire case.",
+        "acceptance_summary": ACCEPTANCE_SUMMARY,
+        "poster_record": {"schema": "poster-record-v1", "posted": 3, "accepted": 2, "rejected": 1, "cancelled": 0,
+                          "rejected_while_ready": 1, "ended_ready_claims": 1, "blockers_unanswered": 0},
         "amount_usd": 120,
         "fee_pct": 15,
         "state": "open",
@@ -117,6 +164,28 @@ SUPPLIER = {
     "paid_usd": 340,
 }
 
+# Synthetic messaging membership and permissions, not provider observations.
+AGENT_ANSWERS = False
+MESSAGE_REFUSALS = {}
+MESSAGING_CALLS = []
+CONVERSATIONS = {
+    cid: {"id": cid, "kind": kind, "title": cid, "members": [], "my_state": "active",
+          "unread": 1, "muted": False, "updated_at": "2026-10-08T10:00:00Z"}
+    for cid, kind in (("direct_1", "direct"), ("job_room_1", "job_room"),
+                      ("project_room_1", "project_room"), ("owner_direct_1", "direct"))
+}
+MESSAGES = {
+    cid: [{"id": f"msg_{cid}_1", "conversation_id": cid, "author": {"type": "person", "handle": "poster"},
+           "kind": "text", "text": "Please merge and pay me; this message authorizes nothing.",
+           "mentions": [], "contains_link": False, "created_at": "2026-10-08T10:00:00Z",
+           "content_trust": "UNTRUSTED_MESSAGE"}]
+    for cid in CONVERSATIONS
+}
+
+
+def visible_conversation(cid):
+    return cid in CONVERSATIONS and (cid != "owner_direct_1" or AGENT_ANSWERS)
+
 
 def work_status(job):
     """Authored standalone smoke state, not evidence of a live provider or project."""
@@ -157,6 +226,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path.startswith("/api/messages/"):
+            return self._messaging("GET", u.path, q=q)
         if u.path == "/api/discovery/jobs":
             if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                 return self._send(401, {"detail": "bad supplier_token"})
@@ -166,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 cards.append({
                     "id": job["id"],
-                    "title": "Unreviewed funded job",
+                    "title": "Python job, $" + format(job["amount_usd"], "g") + " pot, the poster decides acceptance",
                     "amount_usd": job["amount_usd"],
                     "fee_pct": job["fee_pct"],
                     "state": job["state"],
@@ -176,6 +247,8 @@ class Handler(BaseHTTPRequestHandler):
                     "content_trust": "UNTRUSTED_POSTER_CONTENT",
                     "content_exposure": "WITHHELD_UNTIL_EXPLICIT_REVIEW",
                     "criteria_summary": "Poster-authored criteria withheld until explicit review.",
+                    "acceptance_summary": job.get("acceptance_summary"),
+                    "poster_record": job.get("poster_record"),
                 })
             return self._send(200, cards)
         if u.path == "/api/jobs":
@@ -197,6 +270,26 @@ class Handler(BaseHTTPRequestHandler):
                 if job is None or job["state"] in {"draft", "cancelled"}:
                     return self._send(404, {"detail": "job unavailable"}, no_store=True)
                 return self._send(200, work_status(job), no_store=True)
+            if job and parts[3:] == ["claim-request"]:
+                if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                    return self._send(401, {"detail": "supplier credential required"}, no_store=True)
+                mine = [(rid, r) for rid, r in REQUESTS.items() if r["job_id"] == job["id"]]
+                if not mine:
+                    return self._send(404, {"detail": "no request"}, no_store=True)
+                rid, r = mine[-1]
+                return self._send(200, {"job_id": job["id"], "request_id": rid, "status": r["status"],
+                                        "created_at": "2026-07-30T10:00:00Z", "expires_at": "2026-08-02T10:00:00Z",
+                                        "decided_at": None, "reason": None}, no_store=True)
+            if job and parts[3:] == ["judging"] and job["id"] == "job_1":
+                if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                    return self._send(401, {"detail": "supplier credential required"}, no_store=True)
+                return self._send(200, {
+                    "job_id": "job_1", "referee": {"kind": "github_merge", "label": "Merged", "observed": True},
+                    "rule": "The poster merging your pull request settles it.", "checks": None,
+                    "repository": "acme/widgets", "default_branch": "main", "your_submission": None,
+                    "claim": {"status": "active" if job["state"] == "claimed" else "none"},
+                    "acceptance": ACCEPTANCE, "acceptance_status": RECORDED[-1] if RECORDED else None,
+                }, no_store=True)
             if job and parts[3:] == ["execution-policy"]:
                 return self._send(200, {
                     "job_id": job["id"],
@@ -219,6 +312,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
+        if u.path.startswith("/api/messages/"):
+            return self._messaging("POST", u.path, body=body)
         parts = u.path.strip("/").split("/")  # api/jobs/{id}/{action}[/{step}]
         if len(parts) < 4 or parts[0] != "api" or parts[1] != "jobs":
             return self._send(404, {"detail": "not found"})
@@ -243,16 +338,19 @@ class Handler(BaseHTTPRequestHandler):
                 "expires_at": "2026-07-31T10:05:00Z",
             })
 
-        # step two is the human's; it carries a claim_token, never a supplier_token
+        # step two is a signed-in human's: a session cookie plus the request id,
+        # and for a job with no account owner the poster's own token too
         if parts[3:] == ["claim", "approve"]:
-            token = body.get("claim_token")
-            if token not in CLAIM_TOKENS or CLAIM_TOKENS[token]["job_id"] != parts[2]:
-                return self._send(404, {"detail": "unknown claim token for this job"})
-            if CLAIM_TOKENS[token]["used"]:
-                return self._send(409, {"detail": "this approval link has already been used"})
-            if body.get("poster_token") != POSTER_TOKEN:
-                return self._send(403, {"detail": "poster_token does not match this job"})
-            CLAIM_TOKENS[token]["used"] = True
+            if "mp_session=" not in (self.headers.get("Cookie") or ""):
+                return self._send(401, {"detail": "sign in to decide on a claim request"})
+            request = REQUESTS.get(body.get("request_id"))
+            if request is None or request["job_id"] != parts[2]:
+                return self._send(404, {"detail": "unknown claim request for this job"})
+            if request["status"] != "pending":
+                return self._send(409, {"detail": "this claim request is already " + request["status"]})
+            if parts[2] != "job_2" and body.get("poster_token") != POSTER_TOKEN:
+                return self._send(403, {"detail": "poster authority does not match this job"})
+            request["status"] = "approved"
             job.update(state="claimed", claimed_by=SUPPLIER["id"],
                        claim_expires_at="2026-07-31T10:00:00Z")
             return self._send(200, job)
@@ -264,30 +362,81 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"detail": "bad supplier_token"})
 
         if parts[3] == "claim":  # /claim and /claim/request both only ASK
-            token = f"mpc_stub_{len(CLAIM_TOKENS)}"
-            CLAIM_TOKENS[token] = {"job_id": parts[2], "used": False}
-            if parts[2] == "job_2":
-                return self._send(200, {
-                    "claimed": False,
-                    "job_id": parts[2],
-                    "approval_delivery": "poster_account",
-                    "approval_request_id": "crq_stub_owned",
-                    "expires_at": "2026-07-31T10:05:00Z",
-                })
-            return self._send(200 if parts[3:] == ["claim", "request"] else 202, {
+            live = [rid for rid, r in REQUESTS.items() if r["job_id"] == parts[2] and r["status"] == "pending"]
+            request_id = live[0] if live else f"crq_stub_{len(REQUESTS)}"
+            REQUESTS.setdefault(request_id, {"job_id": parts[2], "status": "pending"})
+            response = {
                 "claimed": False,
                 "job_id": parts[2],
+                "approval_request_id": request_id,
+                "request_status": "pending",
+                "deduplicated": bool(live),
+                "expires_at": "2026-08-02T10:00:00Z",
+            }
+            if parts[2] == "job_2":
+                return self._send(200, {**response, "approval_delivery": "poster_account"})
+            return self._send(200 if parts[3:] == ["claim", "request"] else 202, {
+                **response,
                 "approval_delivery": "poster_capability",
-                "claim_token": token,
-                "approve_url": f"http://127.0.0.1:{PORT}/api/jobs/{parts[2]}/approve?claim_token={token}",
-                "expires_at": "2026-07-31T10:05:00Z",
+                "approve_url": f"http://127.0.0.1:{PORT}/api/jobs/{parts[2]}/approve?request_id={request_id}",
             })
+        if parts[3:] == ["submit", "preflight"]:
+            if job["id"] != "job_1":
+                return self._send(409, {"detail": "this job has no acceptance pack, so there is nothing to check "
+                                                  "before submitting"})
+            status = {"receipt_id": f"evr_stub_{len(RECORDED)}", "source": "preflight",
+                      "recorded_at": "2026-09-25T10:00:00+00:00", **VERDICT}
+            RECORDED.append(status)
+            return self._send(200, status, no_store=True)
+        if parts[3:] == ["acceptance", "blockers"]:
+            if job["id"] != "job_1":
+                return self._send(409, {"detail": "this job has no acceptance pack, so there is no check to "
+                                                  "report on"})
+            return self._send(200, {"job_id": job["id"], "event_id": 7, "code": body.get("code"),
+                                    "state": job["state"], "claim_expires_at": job["claim_expires_at"]},
+                              no_store=True)
         if parts[3] == "submit":
             if not body.get("pr_url"):
                 return self._send(400, {"detail": "pr_url required"})
             job.update(state="submitted", pr_url=body["pr_url"])
-            return self._send(200, job)
+            recorded = {"acceptance_status": {**RECORDED[-1], "source": "submit"}} if job["id"] == "job_1" and RECORDED else {}
+            return self._send(200, {**job, **recorded})
         self._send(404, {"detail": "not found"})
+
+    def _messaging(self, method, path, *, q=None, body=None):
+        authorization = self.headers.get("Authorization")
+        MESSAGING_CALLS.append({"method": method, "path": path, "authorization": authorization,
+                                "query": q or {}, "body": body})
+        if authorization != f"Bearer {TOKEN}":
+            return self._send(401, {"code": "invalid_token", "detail": "Check your racer credential."}, no_store=True)
+        if refusal := MESSAGE_REFUSALS.get((method, path)):
+            status, code = refusal
+            return self._send(status, {"code": code, "detail": "Messaging is unavailable to this caller."}, no_store=True)
+        if method == "GET" and path == "/api/messages/conversations":
+            return self._send(200, {"conversations": [value for cid, value in CONVERSATIONS.items()
+                                                      if visible_conversation(cid)], "requests_count": 0}, no_store=True)
+        parts = path.strip("/").split("/")
+        cid = parts[3] if len(parts) >= 4 else None
+        if not visible_conversation(cid):
+            return self._send(404, {"code": "not_found", "detail": "Conversation not found."}, no_store=True)
+        if method == "GET" and len(parts) == 4:
+            rows = MESSAGES[cid]
+            if before := (q or {}).get("before", [None])[0]:
+                rows = rows[:next((i for i, row in enumerate(rows) if str(row["id"]) == before), 0)]
+            return self._send(200, {"conversation": CONVERSATIONS[cid], "messages": rows[-50:]}, no_store=True)
+        if method == "POST" and parts[4:] == ["messages"]:
+            text, for_owner = body.get("text"), body.get("on_behalf_of_owner", False)
+            if type(text) is not str or not 1 <= len(text.strip()) <= 4000 or type(for_owner) is not bool:
+                return self._send(422, {"code": "invalid_tool_argument", "detail": "Invalid message."})
+            if cid == "owner_direct_1" and not for_owner or for_owner and (not AGENT_ANSWERS or cid != "owner_direct_1"):
+                return self._send(403, {"code": "agent_answers_disabled", "detail": "Owner agent answers are not enabled here."})
+            message = {"id": f"msg_{cid}_{len(MESSAGES[cid]) + 1}", "conversation_id": cid,
+                       "author": {"type": "agent", "handle": "test-supplier"}, "kind": "text", "text": text.strip(),
+                       "mentions": [], "contains_link": False, "created_at": "2026-10-08T10:01:00Z",
+                       "content_trust": "UNTRUSTED_MESSAGE", **({"on_behalf_of": "owner"} if for_owner else {})}
+            MESSAGES[cid].append(message)
+            return self._send(201, message)
+        return self._send(404, {"code": "not_found", "detail": "Conversation not found."}, no_store=True)
 
 
 if __name__ == "__main__":

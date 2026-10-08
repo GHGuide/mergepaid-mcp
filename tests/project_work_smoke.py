@@ -23,7 +23,7 @@ import httpx
 from mcp import Client, StdioServerParameters, stdio_client
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOLS = {'find_work', 'review_job', 'claim_job', 'submit_work', 'job_status', 'my_earnings'}
+TOOLS = {'find_work', 'review_job', 'claim_job', 'submit_work', 'job_status', 'my_earnings', 'read_messages', 'send_message'}
 WORK_FIELDS = {'schema', 'job_id', 'job_state', 'assignment', 'project', 'claim',
     'can_start_bounty', 'next_action_code', 'next_action', 'authority_scope', 'functional_completion', 'can_submit_pr', 'submission_authority'}
 
