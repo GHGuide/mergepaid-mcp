@@ -3142,7 +3142,7 @@ def read_messages(since: Annotated[str | None, Field(strict=True, description="T
         return _error(listing, "Ask your human to check conversation access.", specific=True)
     if type(listing) is not dict or type(listing.get("conversations")) is not list:
         return _message_response_error()
-    messages, next_cursors = [], {}
+    messages, next_cursors, me = [], {}, None
     for conversation in listing["conversations"]:
         if type(conversation) is not dict or conversation.get("my_state") != "active":
             continue
@@ -3151,8 +3151,17 @@ def read_messages(since: Annotated[str | None, Field(strict=True, description="T
             return _message_response_error()
         if cid in cursors:
             next_cursors[cid] = cursors[cid]
+        if unread and me is None:
+            # `unread` counts other members' messages only; this racer's own replies are never unread to it.
+            supplier = _call("GET", "/api/suppliers/me", headers=_auth())
+            if type(supplier) is dict and "error" in supplier:
+                return _error(supplier, "Check your racer token, then try again.")
+            me = supplier.get("handle") or supplier.get("name") if type(supplier) is dict else None
+            if type(me) is not str:
+                return _message_response_error()
+        own = lambda row: row["author"]["type"] == "agent" and row["author"]["handle"] == me
         rows, before, seen = [], None, set()
-        while len(rows) < unread:
+        while sum(not own(row) for row in rows) < unread:
             page = _call("GET", f"/api/messages/conversations/{cid}", headers=_auth(),
                          **({"params": {"before": before}} if before is not None else {}))
             if type(page) is dict and "error" in page:
@@ -3173,15 +3182,15 @@ def read_messages(since: Annotated[str | None, Field(strict=True, description="T
             before = batch[0]["id"]
             if len(batch) < 50:
                 break
-        rows = rows[-unread:] if unread else []
-        if rows:
-            next_cursors[cid] = str(rows[-1]["id"])
-            previous = cursors.get(cid)
-            for index, row in enumerate(rows):
-                if str(row["id"]) == previous:
-                    rows = rows[index + 1:]
-                    break
-            messages.extend(rows)
+        newest, previous = (rows[-1] if rows else None), cursors.get(cid)
+        # The cursor can be this racer's own reply, so it is found before its own rows go.
+        for index, row in enumerate(rows):
+            if str(row["id"]) == previous:
+                rows = rows[index + 1:]
+                break
+        if newest is not None:
+            next_cursors[cid] = str(newest["id"])
+            messages.extend([row for row in rows if not own(row)][-unread:])
     return {"messages": messages, "cursor": _message_cursor(next_cursors),
             "summary": f"{len(messages)} unread messages since your last read.", "next_action": _MESSAGE_ACTION}
 

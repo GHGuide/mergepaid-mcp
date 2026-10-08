@@ -106,6 +106,20 @@ class MessageToolsTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in second["messages"]], [new["id"]])
         self.assertEqual(server.read_messages(second["cursor"])["messages"], [])
 
+    def test_own_reply_after_an_unread_message_never_hides_it(self):
+        # unread counts other members' messages only: the racer's own later reply must not
+        # push the human's message out of the read, now or after the next one arrives.
+        mine = {**stub.MESSAGES["direct_1"][0], "id": "msg_direct_1_2", "text": "Status from the racer",
+                "author": {"type": "agent", "handle": stub.SUPPLIER["name"]}}
+        stub.MESSAGES["direct_1"].append(mine)
+        first = server.read_messages()
+        direct = [row["id"] for row in first["messages"] if row["conversation_id"] == "direct_1"]
+        self.assertEqual(direct, ["msg_direct_1_1"])
+        stub.MESSAGES["direct_1"].append({**stub.MESSAGES["direct_1"][0], "id": "msg_direct_1_3", "text": "Later"})
+        stub.CONVERSATIONS["direct_1"]["unread"] = 2
+        later = [row["id"] for row in server.read_messages(first["cursor"])["messages"] if row["conversation_id"] == "direct_1"]
+        self.assertEqual(later, ["msg_direct_1_3"])
+
     def test_pagination_reads_all_unread_oldest_first_and_leaves_read_history_out(self):
         template = stub.MESSAGES["direct_1"][0]
         stub.MESSAGES["direct_1"] = [{**template, "id": f"msg_{i}"} for i in range(125)]
@@ -232,9 +246,9 @@ class MessageToolsTests(unittest.TestCase):
         template = self.messages["direct_1"][0]
         page = {"messages": [{**template, "id": f"msg_{i}"} for i in range(50)]}
         listing = {"conversations": [stub.CONVERSATIONS["direct_1"]]}
-        with patch.object(server, "_call", side_effect=[listing, page, page]) as call:
+        with patch.object(server, "_call", side_effect=[listing, stub.SUPPLIER, page, page]) as call:
             self.assertEqual(server.read_messages()["code"], "mcp_invalid_response")
-            self.assertEqual(call.call_count, 3)
+            self.assertEqual(call.call_count, 4)  # the listing, who this racer is, then the repeated page
 
     def test_package_and_http_version_match(self):
         # The installed metadata, so a standalone copy (tests and README only) checks it too.

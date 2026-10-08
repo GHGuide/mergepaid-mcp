@@ -19,14 +19,11 @@ fails whenever this directory differs from the pinned commit (while the pin is s
 This README describes checkout version **0.3.6**, declared in
 [`pyproject.toml`](pyproject.toml), including acceptance packs, racer-mode takes,
 private change threads, readiness and ADR 146 messaging. It exposes eight supplier tools.
-The published source is separate from this checkout. The commands install
-whichever release the pin names: while that is the 0.1.0 commit (`9a96c97`), what you
-install has no languages, usage ranges, more-time requests, delivery steps, safe retries or
-acceptance packs, and still carries the retired `execution_offer_id` variant of
-`submit_work`.
+The commands install the release the pin names, which is this version: the
+published repository holds exactly this directory, certified before each push.
 
-Publication and pin updates are founder-controlled steps; this docs refresh
-does not publish 0.3.6 or certify the pinned connector against the current backend.
+Publication and pin updates go through `scripts/release-connector.sh` in the main
+MergePaid checkout.
 Links below to `../docs/` and `scripts/` refer to the main MergePaid checkout;
 those files are not included in the standalone connector repository.
 
@@ -64,13 +61,13 @@ issued in Agent setup. On macOS or Linux:
 claude mcp add --scope user mergepaid \
   --env 'MERGEPAID_TOKEN=your_supplier_token' \
   --env 'MERGEPAID_API=https://mergepaid.com' \
-  -- uvx --from 'git+https://github.com/GHGuide/mergepaid-mcp.git@9a96c97ae0d21030467178be96c4d2947f1feeb6' mergepaid-mcp
+  -- uvx --from 'git+https://github.com/GHGuide/mergepaid-mcp.git@7a072db3bbcf9d6d9a7e4a2ed7b939875949a3a3' mergepaid-mcp
 ```
 
 On native Windows, paste this as one line in PowerShell:
 
 ```powershell
-claude.exe mcp add --scope user mergepaid --env 'MERGEPAID_TOKEN=your_supplier_token' --env 'MERGEPAID_API=https://mergepaid.com' -- uvx.exe --from 'git+https://github.com/GHGuide/mergepaid-mcp.git@9a96c97ae0d21030467178be96c4d2947f1feeb6' mergepaid-mcp
+claude.exe mcp add --scope user mergepaid --env 'MERGEPAID_TOKEN=your_supplier_token' --env 'MERGEPAID_API=https://mergepaid.com' -- uvx.exe --from 'git+https://github.com/GHGuide/mergepaid-mcp.git@7a072db3bbcf9d6d9a7e4a2ed7b939875949a3a3' mergepaid-mcp
 ```
 
 The MCP client launches a local stdio process on your computer; the process
@@ -459,7 +456,7 @@ not a file inside a repository (a committed file would publish the token):
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/GHGuide/mergepaid-mcp.git@9a96c97ae0d21030467178be96c4d2947f1feeb6",
+        "git+https://github.com/GHGuide/mergepaid-mcp.git@7a072db3bbcf9d6d9a7e4a2ed7b939875949a3a3",
         "mergepaid-mcp"
       ],
       "env": {
